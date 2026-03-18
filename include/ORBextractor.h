@@ -51,9 +51,14 @@ public:
 
     ~ORBextractor(){}
 
-    // Compute the ORB features and descriptors on an image.
-    // ORB are dispersed on the image using an octree.
-    // Mask is ignored in the current implementation.
+    // ORB 특징점(키포인트) + 디스크립터 추출 엔트리.
+    // 파이프라인(요약):
+    //  - 스케일 피라미드 생성
+    //  - 레벨별 FAST로 후보 검출 후 OctTree로 공간 분산(균일화)
+    //  - Intensity Centroid로 방향(orientation) 계산
+    //  - 회전된 BRIEF 비교로 32-byte 디스크립터 생성
+    //
+    // 참고: 현재 구현에서는 mask 입력을 사용하지 않습니다.
     int operator()( cv::InputArray _image, cv::InputArray _mask,
                     std::vector<cv::KeyPoint>& _keypoints,
                     cv::OutputArray _descriptors, std::vector<int> &vLappingArea);

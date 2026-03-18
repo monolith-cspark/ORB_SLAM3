@@ -38,6 +38,21 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    // NOTE(중요):
+    // - ORB-SLAM3는 "학습(Training)"을 하는 코드가 아닙니다. 실행 중에 학습 데이터를 선택/활용하는 스위치가 없어요.
+    // - 여기서 결정하는 건 오직 "입력 소스"입니다.
+    //   * 이 예제(mono_euroc)는 디스크의 이미지 시퀀스(데이터셋) + 타임스탬프 파일을 읽어 재생합니다.
+    //   * 웹캠 예제라면 cv::VideoCapture로 프레임을 캡처해서 동일하게 TrackMonocular()로 넘깁니다.
+    //
+    // (추가) "미리 만든 맵으로 localization-only"도 가능합니다.
+    // - Atlas(맵) 로드/저장:
+    //   * settings YAML에 `System.LoadAtlasFromFile: <path>`를 넣으면 System 생성 시 Atlas를 파일에서 로드합니다.
+    //   * settings YAML에 `System.SaveAtlasToFile: <path>`를 넣으면 Shutdown() 시 Atlas를 파일로 저장합니다.
+    //     (구현: src/System.cc에서 Shutdown() 때 SaveAtlas() 호출)
+    // - Localization-only(Tracking-only) 모드:
+    //   * `SLAM.ActivateLocalizationMode()`를 호출하면 LocalMapping(맵 빌드)을 멈추고 추적만 수행합니다.
+    //   * 뷰어를 켠 경우, GUI의 `menu.Localization Mode` 토글로도 동일하게 켜고 끌 수 있습니다. (src/Viewer.cc)
+
     const int num_seq = (argc-3)/2;
     cout << "num_seq = " << num_seq << endl;
     bool bFileName= (((argc-3) % 2) == 1);
@@ -136,7 +151,9 @@ int main(int argc, char **argv)
     #endif
 
             // Pass the image to the SLAM system
-            // cout << "tframe = " << tframe << endl;
+            // 여기서 "데이터셋을 쓸지/웹캠을 쓸지"가 갈립니다.
+            // - 데이터셋 재생: 위에서 파일로 읽은 im + 파일에서 읽은 tframe(기록된 촬영시간)을 사용.
+            // - 웹캠 실시간: 캡처한 frame + (steady_clock 기반) 현재 경과시간으로 만든 tframe을 사용.
             SLAM.TrackMonocular(im,tframe); // TODO change to monocular_inertial
 
     #ifdef COMPILEDWITHC11

@@ -201,6 +201,10 @@ add_executable(mono_euroc
         Examples/Monocular/mono_euroc.cc)
 target_link_libraries(mono_euroc ${PROJECT_NAME})
 
+add_executable(mono_webcam
+        Examples/Monocular/mono_webcam.cc)
+target_link_libraries(mono_webcam ${PROJECT_NAME})
+
 add_executable(mono_tum_vi
         Examples/Monocular/mono_tum_vi.cc)
 target_link_libraries(mono_tum_vi ${PROJECT_NAME})

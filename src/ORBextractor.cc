@@ -72,6 +72,17 @@ namespace ORB_SLAM3
     const int HALF_PATCH_SIZE = 15;
     const int EDGE_THRESHOLD = 19;
 
+    /*
+     * ORB 특징점 추출(ORB-SLAM3) 파이프라인 개요
+     * 1) 스케일 피라미드 생성 (ComputePyramid)
+     * 2) 레벨별 FAST로 후보 키포인트 검출 + OctTree로 공간 분산 (ComputeKeyPointsOctTree / DistributeOctTree)
+     * 3) Intensity Centroid(IC)로 방향(orientation) 부여 (computeOrientation / IC_Angle)
+     * 4) 방향에 맞춰 회전된 BRIEF 비교로 256-bit 디스크립터 생성 (computeDescriptors / computeOrbDescriptor)
+     *
+     * 주의: 이 파일은 OpenCV ORB 구현을 기반으로 하되, SLAM에서 필요한 "균일 분포"를 위해
+     *       OctTree 기반 선택을 사용합니다.
+     */
+
 
     static float IC_Angle(const Mat& image, Point2f pt,  const vector<int> & u_max)
     {
@@ -79,11 +90,15 @@ namespace ORB_SLAM3
 
         const uchar* center = &image.at<uchar> (cvRound(pt.y), cvRound(pt.x));
 
+        // (단계 3) Intensity Centroid 방향 추정:
+        // 원형 패치(PATCH_SIZE=31) 내부의 1차 모멘트 m10, m01을 누적해 atan2(m01, m10)로 각도를 구함.
+        // u_max[v]는 원형 패치에서 각 row(v)의 유효 u 범위를 미리 계산해 둔 값.
+        //
         // Treat the center line differently, v=0
         for (int u = -HALF_PATCH_SIZE; u <= HALF_PATCH_SIZE; ++u)
             m_10 += u * center[u];
 
-        // Go line by line in the circuI853lar patch
+        // Go line by line in the circular patch
         int step = (int)image.step1();
         for (int v = 1; v <= HALF_PATCH_SIZE; ++v)
         {
@@ -108,6 +123,9 @@ namespace ORB_SLAM3
                                      const Mat& img, const Point* pattern,
                                      uchar* desc)
     {
+        // (단계 4) 회전 불변 ORB 디스크립터:
+        // 키포인트 방향(kpt.angle)을 이용해 샘플링 패턴을 회전시킨 뒤,
+        // 256쌍의 강도 비교 결과를 256-bit(=32 bytes)로 패킹.
         float angle = (float)kpt.angle*factorPI;
         float a = (float)cos(angle), b = (float)sin(angle);
 
@@ -406,11 +424,13 @@ namespace ORB_SLAM3
                     -1,-6, 0,-11/*mean (0.127148), correlation (0.547401)*/
             };
 
+    // 초기화 ( 스케일/패턴/방향 계산 준비)
     ORBextractor::ORBextractor(int _nfeatures, float _scaleFactor, int _nlevels,
                                int _iniThFAST, int _minThFAST):
             nfeatures(_nfeatures), scaleFactor(_scaleFactor), nlevels(_nlevels),
             iniThFAST(_iniThFAST), minThFAST(_minThFAST)
     {
+        // (초기화) 피라미드 스케일/레벨별 특징점 목표 개수/BRIEF 패턴/IC 방향계산용 테이블 준비
         mvScaleFactor.resize(nlevels);
         mvLevelSigma2.resize(nlevels);
         mvScaleFactor[0]=1.0f;
@@ -470,6 +490,7 @@ namespace ORB_SLAM3
 
     static void computeOrientation(const Mat& image, vector<KeyPoint>& keypoints, const vector<int>& umax)
     {
+        // (단계 3) 각 키포인트에 대해 IC_Angle로 방향을 부여 (angle은 degree 단위)
         for (vector<KeyPoint>::iterator keypoint = keypoints.begin(),
                      keypointEnd = keypoints.end(); keypoint != keypointEnd; ++keypoint)
         {
@@ -555,6 +576,11 @@ namespace ORB_SLAM3
     vector<cv::KeyPoint> ORBextractor::DistributeOctTree(const vector<cv::KeyPoint>& vToDistributeKeys, const int &minX,
                                                          const int &maxX, const int &minY, const int &maxY, const int &N, const int &level)
     {
+        // (단계 2-2) OctTree로 키포인트를 "공간적으로 고르게" 선택:
+        // - 후보가 몰린 영역만 과도하게 선택되는 것을 방지 (Tracking/Matching의 안정성에 중요)
+        // - 노드를 반복적으로 4분할하며 N개 수준까지 노드 수를 늘림
+        // - 각 노드에서는 response 최대인 키포인트 1개만 유지
+
         // Compute how many initial nodes
         const int nIni = round(static_cast<float>(maxX-minX)/(maxY-minY));
 
@@ -780,6 +806,9 @@ namespace ORB_SLAM3
 
     void ORBextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint> >& allKeypoints)
     {
+        // (단계 2) 레벨별 키포인트 추출:
+        //  - 셀 그리드(대략 W=35 픽셀) 단위로 FAST를 수행해 후보를 모은 뒤
+        //  - OctTree 분산으로 레벨별 목표 개수(mnFeaturesPerLevel[level])를 고르게 선택
         allKeypoints.resize(nlevels);
 
         const float W = 35;
@@ -823,6 +852,7 @@ namespace ORB_SLAM3
 
                     vector<cv::KeyPoint> vKeysCell;
 
+                    // FAST 1차 시도: 비교적 높은 임계값(iniThFAST)으로 안정적인 코너를 우선 검출
                     FAST(mvImagePyramid[level].rowRange(iniY,maxY).colRange(iniX,maxX),
                          vKeysCell,iniThFAST,true);
 
@@ -842,6 +872,7 @@ namespace ORB_SLAM3
 
                     if(vKeysCell.empty())
                     {
+                        // FAST 2차 시도: 특징점이 너무 적으면 임계값(minThFAST)으로 완화해 재시도
                         FAST(mvImagePyramid[level].rowRange(iniY,maxY).colRange(iniX,maxX),
                              vKeysCell,minThFAST,true);
                         /*if(bRight && j <= 13){
@@ -860,6 +891,7 @@ namespace ORB_SLAM3
 
                     if(!vKeysCell.empty())
                     {
+                        // 셀 내부 좌표 -> 레벨 좌표로 변환하여 후보 리스트에 누적
                         for(vector<cv::KeyPoint>::iterator vit=vKeysCell.begin(); vit!=vKeysCell.end();vit++)
                         {
                             (*vit).pt.x+=j*wCell;
@@ -883,6 +915,7 @@ namespace ORB_SLAM3
             const int nkps = keypoints.size();
             for(int i=0; i<nkps ; i++)
             {
+                // 피라미드 생성 시 추가한 border(EDGE_THRESHOLD) 만큼 보정해 실제 레벨 이미지 좌표로 복귀
                 keypoints[i].pt.x+=minBorderX;
                 keypoints[i].pt.y+=minBorderY;
                 keypoints[i].octave=level;
@@ -1077,6 +1110,7 @@ namespace ORB_SLAM3
     static void computeDescriptors(const Mat& image, vector<KeyPoint>& keypoints, Mat& descriptors,
                                    const vector<Point>& pattern)
     {
+        // (단계 4) 각 키포인트별 32-byte ORB 디스크립터 생성
         descriptors = Mat::zeros((int)keypoints.size(), 32, CV_8UC1);
 
         for (size_t i = 0; i < keypoints.size(); i++)
@@ -1086,17 +1120,18 @@ namespace ORB_SLAM3
     int ORBextractor::operator()( InputArray _image, InputArray _mask, vector<KeyPoint>& _keypoints,
                                   OutputArray _descriptors, std::vector<int> &vLappingArea)
     {
-        //cout << "[ORBextractor]: Max Features: " << nfeatures << endl;
+        // 단계 1~5를 수행해 최종 키포인트/디스크립터를 산출한다.
         if(_image.empty())
             return -1;
 
         Mat image = _image.getMat();
         assert(image.type() == CV_8UC1 );
 
-        // Pre-compute the scale pyramid
+        // (단계 1) 스케일 피라미드 생성
         ComputePyramid(image);
 
         vector < vector<KeyPoint> > allKeypoints;
+        // (단계 2~3) FAST 후보 -> OctTree 분산 -> orientation까지 레벨별로 계산
         ComputeKeyPointsOctTree(allKeypoints);
         //ComputeKeyPointsOld(allKeypoints);
 
@@ -1128,11 +1163,11 @@ namespace ORB_SLAM3
             if(nkeypointsLevel==0)
                 continue;
 
-            // preprocess the resized image
+            // 디스크립터 계산 전, 레벨 이미지에 약한 블러를 적용해 노이즈 민감도를 낮춤
             Mat workingMat = mvImagePyramid[level].clone();
             GaussianBlur(workingMat, workingMat, Size(7, 7), 2, 2, BORDER_REFLECT_101);
 
-            // Compute the descriptors
+            // (단계 4) 디스크립터 계산은 레벨 좌표계에서 수행 (이후 레벨!=0이면 좌표만 원본 스케일로 복원)
             //Mat desc = descriptors.rowRange(offset, offset + nkeypointsLevel);
             Mat desc = cv::Mat(nkeypointsLevel, 32, CV_8U);
             computeDescriptors(workingMat, keypoints, desc, pattern);
@@ -1145,11 +1180,12 @@ namespace ORB_SLAM3
             for (vector<KeyPoint>::iterator keypoint = keypoints.begin(),
                          keypointEnd = keypoints.end(); keypoint != keypointEnd; ++keypoint){
 
-                // Scale keypoint coordinates
+                // (단계 5) 레벨 좌표 -> 원본(레벨0) 좌표로 복원 (디스크립터는 레벨에서 계산된 그대로 사용)
                 if (level != 0){
                     keypoint->pt *= scale;
                 }
 
+                // Stereo/fisheye 최적화: 겹침 영역(vLappingArea) 기준으로 mono/stereo 영역 키포인트를 분리 배치
                 if(keypoint->pt.x >= vLappingArea[0] && keypoint->pt.x <= vLappingArea[1]){
                     _keypoints.at(stereoIndex) = (*keypoint);
                     desc.row(i).copyTo(descriptors.row(stereoIndex));
@@ -1169,6 +1205,8 @@ namespace ORB_SLAM3
 
     void ORBextractor::ComputePyramid(cv::Mat image)
     {
+        // (단계 1) 스케일 피라미드 생성:
+        // 각 레벨 이미지 주변에 EDGE_THRESHOLD border를 두어 패치/디스크립터 계산 시 경계 접근을 완화한다.
         for (int level = 0; level < nlevels; ++level)
         {
             float scale = mvInvScaleFactor[level];
