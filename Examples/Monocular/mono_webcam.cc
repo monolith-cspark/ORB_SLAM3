@@ -74,7 +74,9 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    // Request FHD 30fps (may be clamped by the driver/camera).
+    // In some environments (notably USB/IP + WSL2), requesting FHD without forcing a
+    // compatible pixel format can lead to V4L2 timeouts. This camera exposes FHD via MJPG.
+    cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
     cap.set(cv::CAP_PROP_FRAME_WIDTH, 1920);
     cap.set(cv::CAP_PROP_FRAME_HEIGHT, 1080);
     cap.set(cv::CAP_PROP_FPS, 30);
